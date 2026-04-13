@@ -952,13 +952,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "esp-hal-smartled2"
-version = "0.28.1"
+name = "esp-hal-smartled"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1a00c36869076635bf254dee6f78ac8b9d3fa71541470538a8fffbdb626d120"
+checksum = "23eaae863a73f9bd1626687f539ff38942b442ae3974838ceeae5e932ddf0a2a"
 dependencies = [
+ "document-features",
  "esp-hal",
- "num-traits",
+ "rgb",
  "smart-leds-trait",
 ]
 
@@ -1346,6 +1347,7 @@ checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
 dependencies = [
  "defmt 0.3.100",
  "hash32 0.3.1",
+ "serde",
  "stable_deref_trait",
 ]
 
@@ -1478,11 +1480,13 @@ dependencies = [
  "esp-alloc",
  "esp-bootloader-esp-idf",
  "esp-hal",
- "esp-hal-smartled2",
+ "esp-hal-smartled",
  "esp-radio",
  "esp-rtos",
  "rtt-target",
  "rust-mqtt",
+ "serde",
+ "serde-json-core",
  "smart-leds",
  "smoltcp",
  "static_cell",
@@ -1752,6 +1756,9 @@ name = "rgb"
 version = "0.8.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "riscv"
@@ -1904,6 +1911,18 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde-json-core"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b81787e655bd59cecadc91f7b6b8651330b2be6c33246039a65e5cd6f4e0828"
+dependencies = [
+ "defmt 0.3.100",
+ "heapless 0.8.0",
+ "ryu",
+ "serde",
 ]
 
 [[package]]

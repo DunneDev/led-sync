@@ -2,20 +2,23 @@
 #![no_main]
 
 mod button;
+mod led;
 mod mqtt;
 
-use crate::mqtt::Command;
 use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_net::{Runner, StackResources};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_hal::{
     clock::CpuClock,
     gpio::{Input, InputConfig, Pull},
+    rmt::{PulseCode, Rmt},
     rng::Trng,
+    time::Rate,
     timer::timg::TimerGroup,
 };
+
+use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
 use esp_radio::{
     Controller,
     wifi::{
@@ -39,7 +42,7 @@ const PASSWORD: &str = env!("PASSWORD");
 
 static ESP_RADIO_CTRL: StaticCell<Controller<'static>> = StaticCell::new();
 static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
-static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, Command, 5> = Channel::new();
+static LED_BUFFER: StaticCell<[PulseCode; 25]> = StaticCell::new();
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
@@ -95,6 +98,13 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(button::button_task(button)).unwrap();
 
+    let led_buffer = LED_BUFFER.init(smart_led_buffer!(1));
+    let led_adapter = {
+        let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80)).unwrap();
+        SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO8, led_buffer)
+    };
+
+    spawner.spawn(led::led_task(led_adapter)).unwrap();
     core::future::pending::<()>().await;
 }
 
