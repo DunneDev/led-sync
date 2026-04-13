@@ -1,11 +1,19 @@
 #![no_std]
 #![no_main]
 
-use defmt::info;
+mod mqtt;
+
+use crate::mqtt::mqtt_task;
+use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_net::{Runner, StackResources};
 use embassy_time::{Duration, Timer};
-use esp_hal::{clock::CpuClock, rng::Rng, timer::timg::TimerGroup};
+use esp_hal::{
+    clock::CpuClock,
+    gpio::{Input, InputConfig, Pull},
+    rng::Trng,
+    timer::timg::TimerGroup,
+};
 use esp_radio::{
     Controller,
     wifi::{
@@ -15,7 +23,8 @@ use esp_radio::{
 use static_cell::StaticCell;
 
 #[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
+fn panic(e: &core::panic::PanicInfo) -> ! {
+    error!("{}", e);
     loop {}
 }
 
@@ -51,22 +60,38 @@ async fn main(spawner: Spawner) -> ! {
 
     let config = embassy_net::Config::dhcpv4(Default::default());
 
-    let rng = Rng::new();
-    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    let rng = Trng::try_new().unwrap();
+    let net_seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
-    let (_stack, runner) = embassy_net::new(
+    let (stack, runner) = embassy_net::new(
         wifi_interface,
         config,
         STACK_RESOURCES.init(StackResources::<3>::new()),
-        seed,
+        net_seed,
     );
 
     spawner.spawn(connection(controller)).ok();
     spawner.spawn(net_task(runner)).ok();
 
+    while !stack.is_link_up() {
+        Timer::after(Duration::from_millis(500)).await;
+    }
+
+    while stack.config_v4().is_none() {
+        Timer::after(Duration::from_millis(500)).await;
+    }
+
+    info!("IP acquired: {:?}", stack.config_v4());
+
+    spawner.spawn(mqtt_task(stack, rng)).unwrap();
+
+    let _button = Input::new(
+        peripherals.GPIO9,
+        InputConfig::default().with_pull(Pull::Up),
+    );
+
     loop {
-        info!("Hello world!");
-        Timer::after(Duration::from_secs(1)).await;
+        Timer::after(Duration::from_secs(10)).await;
     }
 }
 
@@ -106,7 +131,7 @@ async fn connection(mut controller: WifiController<'static>) {
         match controller.connect_async().await {
             Ok(_) => info!("Wifi connected!"),
             Err(e) => {
-                info!("Failed to connect to wifi: {}", e);
+                error!("Failed to connect to wifi: {}", e);
                 Timer::after(Duration::from_millis(5000)).await
             }
         }
@@ -117,3 +142,12 @@ async fn connection(mut controller: WifiController<'static>) {
 async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     runner.run().await
 }
+
+// #[embassy_executor::task]
+// async fn button_task(button: Input) {
+//     loop {
+//         let topic = TopicName::new(MqttString::from_str("button").unwrap()).unwrap();
+//
+//         button.wait_for_falling_edge().await;
+//     }
+// }
