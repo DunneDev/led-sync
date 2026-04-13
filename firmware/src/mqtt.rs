@@ -1,24 +1,37 @@
-use defmt::info;
+use alloc::{format, string::String};
+use defmt::{error, info};
+use embassy_futures::select::{Either, select};
 use embassy_net::{
     IpEndpoint, Stack,
     dns::DnsQueryType,
     tcp::{self, TcpSocket},
 };
-use embassy_time::Timer;
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 use esp_hal::rng::Trng;
 use rust_mqtt::{
     buffer::AllocBuffer,
     client::{
         Client as MqttClient,
-        options::{ConnectOptions, PublicationOptions, TopicReference},
+        event::Event,
+        options::{ConnectOptions, PublicationOptions, SubscriptionOptions, TopicReference},
     },
     config::SessionExpiryInterval,
-    types::{MqttBinary, MqttString, TopicName},
+    types::{MqttBinary, MqttString, TopicFilter, TopicName},
 };
+
+use crate::COMMAND_CHANNEL;
 
 const TCP_BUFF_SIZE: usize = 4096;
 const TLS_BUFF_SIZE: usize = 16640;
+
+pub enum ButtonState {
+    Pressed,
+    Released,
+}
+
+pub enum Command {
+    PublishButtonEvent(ButtonState),
+}
 
 #[derive(Debug)]
 struct MqttTcpError(tcp::Error);
@@ -125,20 +138,48 @@ pub async fn mqtt_task(stack: Stack<'static>, rng: Trng) {
 
     info!("connected");
 
+    client
+        .subscribe(
+            TopicFilter::new(MqttString::from_str("led").unwrap()).unwrap(),
+            SubscriptionOptions::new().at_least_once(),
+        )
+        .await
+        .unwrap();
+
     let button_topic =
         TopicReference::Name(TopicName::new(MqttString::from_str("button").unwrap()).unwrap());
     let button_options = PublicationOptions::new(button_topic).at_least_once();
 
-    let message = r#"{"msg":"pressed"}"#;
-    client
-        .publish(&button_options, message.into())
-        .await
-        .unwrap()
-        .unwrap();
-
-    info!("Sent message: {}", message);
-
     loop {
-        Timer::after_secs(10).await;
+        match select(COMMAND_CHANNEL.receive(), client.poll()).await {
+            Either::First(command) => match command {
+                Command::PublishButtonEvent(button_state) => {
+                    let message = match button_state {
+                        ButtonState::Pressed => "pressed",
+                        ButtonState::Released => "released",
+                    };
+
+                    let _ = client
+                        .publish(&button_options, format_msg(message).as_str().into())
+                        .await
+                        .unwrap();
+                }
+            },
+
+            Either::Second(poll_result) => match poll_result {
+                Ok(event) => {
+                    if let Event::Publish(publish_msg) = event {
+                        info!("Received message on topic: {:?}", publish_msg.topic);
+                    }
+                }
+                Err(e) => {
+                    error!("MQTT Poll Error: {:?}", e);
+                }
+            },
+        }
     }
+}
+
+fn format_msg(msg: &str) -> String {
+    format!(r#"{{"msg":"{}"}}"#, msg)
 }

@@ -39,8 +39,6 @@ embedded-tls = { version = "0.18.0", default-features = false, features = [
 esp-alloc = { version = "0.9.0", features = ["defmt"] }
 rtt-target = { version = "0.6.2", features = ["defmt"] }
 # for more networking protocol support see https://crates.io/crates/edge-net
-embassy-executor = { version = "0.9.1", features = ["defmt"] }
-embassy-time = { version = "0.5.0", features = ["defmt"] }
 esp-radio = { version = "0.17.0", features = [
   "defmt",
   "esp-alloc",
@@ -49,6 +47,10 @@ esp-radio = { version = "0.17.0", features = [
   "unstable",
   "wifi",
 ] }
+embassy-executor = { version = "0.9.1", features = ["defmt"] }
+embassy-futures = { version = "0.1.2", features = ["defmt"] }
+embassy-time = { version = "0.5.0", features = ["defmt"] }
+embassy-sync = { version = "0.8.0", features = ["defmt"] }
 smoltcp = { version = "0.12.0", default-features = false, features = [
   "defmt",
   "medium-ethernet",
@@ -67,6 +69,9 @@ critical-section = "1.2.0"
 static_cell = { version = "2.1.1" }
 
 rust-mqtt = { version = "0.5.1", features = ["defmt"] }
+
+smart-leds = "0.4.0"
+esp-hal-smartled2 = "0.28.1"
 
 [profile.dev]
 # Rust debug is too slow.

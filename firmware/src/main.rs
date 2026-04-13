@@ -1,12 +1,14 @@
 #![no_std]
 #![no_main]
 
+mod button;
 mod mqtt;
 
-use crate::mqtt::mqtt_task;
+use crate::mqtt::Command;
 use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_net::{Runner, StackResources};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_hal::{
     clock::CpuClock,
@@ -37,9 +39,10 @@ const PASSWORD: &str = env!("PASSWORD");
 
 static ESP_RADIO_CTRL: StaticCell<Controller<'static>> = StaticCell::new();
 static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, Command, 5> = Channel::new();
 
 #[esp_rtos::main]
-async fn main(spawner: Spawner) -> ! {
+async fn main(spawner: Spawner) {
     rtt_target::rtt_init_defmt!();
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
@@ -83,16 +86,16 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("IP acquired: {:?}", stack.config_v4());
 
-    spawner.spawn(mqtt_task(stack, rng)).unwrap();
+    spawner.spawn(mqtt::mqtt_task(stack, rng)).unwrap();
 
-    let _button = Input::new(
+    let button = Input::new(
         peripherals.GPIO9,
         InputConfig::default().with_pull(Pull::Up),
     );
 
-    loop {
-        Timer::after(Duration::from_secs(10)).await;
-    }
+    spawner.spawn(button::button_task(button)).unwrap();
+
+    core::future::pending::<()>().await;
 }
 
 #[embassy_executor::task]
@@ -142,12 +145,3 @@ async fn connection(mut controller: WifiController<'static>) {
 async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     runner.run().await
 }
-
-// #[embassy_executor::task]
-// async fn button_task(button: Input) {
-//     loop {
-//         let topic = TopicName::new(MqttString::from_str("button").unwrap()).unwrap();
-//
-//         button.wait_for_falling_edge().await;
-//     }
-// }
