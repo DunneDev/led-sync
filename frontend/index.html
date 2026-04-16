@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ESP32 Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.1/mqtt.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="app-title">
+    <div class="app-title-icon">
+      <svg viewBox="0 0 16 16"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zM6.5 5a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zm-1 5.5a.5.5 0 01.5-.5h4a.5.5 0 010 1h-4a.5.5 0 01-.5-.5z"/></svg>
+    </div>
+    ESP32 Dashboard
+  </div>
+  <div class="conn-badge" id="conn-badge">
+    <span class="conn-dot"></span>
+    <span id="conn-label">Connecting</span>
+  </div>
+</header>
+
+<main class="main">
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Hardware Button</span>
+      <span class="state-badge" id="state-badge">
+        <span class="state-badge-dot"></span>
+        <span id="state-text">Released</span>
+      </span>
+    </div>
+    <div class="card-body">
+      <div class="button-display">
+        <div class="hw-stage" id="hw-stage">
+          <div class="hw-btn-outer" id="hw-outer">
+            <div class="hw-btn-inner" id="hw-inner"></div>
+          </div>
+        </div>
+        <div class="event-log" id="event-log">
+          <div class="log-row"><span class="log-ts">--:--:--</span><span class="log-msg">Waiting for events…</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">LED Colour</span>
+    </div>
+    <div class="card-body">
+      <div class="led-section">
+
+        <div class="led-preview">
+          <div class="led-orb" id="led-orb"></div>
+          <div class="led-meta">
+            <div class="led-hex-val" id="led-hex">#00FF00</div>
+            <div class="led-rgb-val" id="led-rgb">rgb(0, 255, 0)</div>
+          </div>
+        </div>
+
+        <div class="throttle-bar-wrap" id="throttle-wrap">
+          <div class="throttle-bar" id="throttle-bar"></div>
+        </div>
+
+        <div class="sliders">
+          <div class="slider-row">
+            <span class="ch-label r">R</span>
+            <input type="range" id="range-r" min="0" max="255" value="0"/>
+            <span class="ch-val" id="val-r">0</span>
+          </div>
+          <div class="slider-row">
+            <span class="ch-label g">G</span>
+            <input type="range" id="range-g" min="0" max="255" value="255"/>
+            <span class="ch-val" id="val-g">255</span>
+          </div>
+          <div class="slider-row">
+            <span class="ch-label b">B</span>
+            <input type="range" id="range-b" min="0" max="255" value="0"/>
+            <span class="ch-val" id="val-b">0</span>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="presets-row">
+          <span class="presets-label">Presets</span>
+          <div id="presets" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
