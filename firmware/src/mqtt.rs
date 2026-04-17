@@ -22,7 +22,10 @@ use rust_mqtt::{
 use serde::Deserialize;
 use smart_leds::{RGB8, colors::GREEN};
 
-use crate::led::{LED_COMMAND_CHANNEL, LedCommand};
+use crate::{
+    led::{LED_COMMAND_CHANNEL, LedCommand},
+    networking::{Networking, tcp::TcpConnection},
+};
 
 pub static MQTT_COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, Command, 5> = Channel::new();
 
@@ -93,44 +96,18 @@ struct LedMessage {
 }
 
 #[embassy_executor::task]
-pub async fn mqtt_task(stack: Stack<'static>, rng: Trng) {
+pub async fn mqtt_task(networking: Networking<'static>) {
     const BROKER_ADDRESS: &str = env!("BROKER_ADDRESS");
 
-    let addresses = stack
-        .dns_query(BROKER_ADDRESS, DnsQueryType::A)
+    let tls = TcpConnection::new(networking, BROKER_ADDRESS)
+        .await
+        .unwrap()
+        .with_tls()
         .await
         .unwrap();
-    let address = addresses.first().unwrap();
-    let endpoint = IpEndpoint::new(*address, 8883);
-
-    info!("Connecting to MQTT broker");
-
-    let mut rx_buffer = [0; TCP_BUFF_SIZE];
-    let mut tx_buffer = [0; TCP_BUFF_SIZE];
-    let mut socket = MqttTcpSocket::new(TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer));
-    socket.0.connect(endpoint).await.unwrap();
-
-    let mut read_record_buffer = [0; TLS_BUFF_SIZE];
-    let mut write_record_buffer = [0; TLS_BUFF_SIZE];
-    let mut tls: TlsConnection<_, Aes128GcmSha256> =
-        TlsConnection::new(socket, &mut read_record_buffer, &mut write_record_buffer);
-
-    info!("Starting handshake");
-
-    let config = TlsConfig::new()
-        .with_server_name(BROKER_ADDRESS)
-        .enable_rsa_signatures();
-
-    tls.open(TlsContext::new(
-        &config,
-        UnsecureProvider::new::<Aes128GcmSha256>(rng),
-    ))
-    .await
-    .unwrap();
-
-    info!("Handshake complete");
 
     let mut mqtt_buffer = AllocBuffer;
+
     let mut client: MqttClient<_, _, 10, 10, 10, 4> = MqttClient::new(&mut mqtt_buffer);
 
     let connect_options = ConnectOptions::new()
