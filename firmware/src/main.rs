@@ -47,7 +47,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    spawner.spawn(mqtt::mqtt_task(networking)).unwrap();
+    spawner.spawn(mqtt::mqtt_service(networking)).unwrap();
 
     let button = Input::new(
         peripherals.GPIO9,

@@ -1,36 +1,35 @@
-use alloc::{format, string::String};
-use defmt::{error, info};
-use embassy_futures::select::{Either, select};
-use embassy_net::{
-    IpEndpoint, Stack,
-    dns::DnsQueryType,
-    tcp::{self, TcpSocket},
+use core::num::NonZeroU16;
+
+use alloc::{
+    format,
+    string::{FromUtf8Error, String},
 };
+use defmt::{Debug2Format, error, info};
+use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
-use esp_hal::rng::Trng;
+use embassy_time::Timer;
 use rust_mqtt::{
     buffer::AllocBuffer,
     client::{
-        Client as MqttClient,
+        Client as MqttClient, MqttError,
         event::Event,
         options::{ConnectOptions, PublicationOptions, SubscriptionOptions, TopicReference},
     },
-    config::SessionExpiryInterval,
-    types::{MqttBinary, MqttString, TopicFilter, TopicName},
+    config::{KeepAlive, SessionExpiryInterval},
+    types::{MqttBinary, MqttString, MqttStringError, TooLargeToEncode, TopicFilter, TopicName},
 };
 use serde::Deserialize;
-use smart_leds::{RGB8, colors::GREEN};
+use smart_leds::RGB8;
 
 use crate::{
     led::{LED_COMMAND_CHANNEL, LedCommand},
-    networking::{Networking, tcp::TcpConnection},
+    networking::{
+        Networking,
+        tcp::{TcpConnection, TcpConnectionError, TlsConnectionError},
+    },
 };
 
 pub static MQTT_COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, Command, 5> = Channel::new();
-
-const TCP_BUFF_SIZE: usize = 4096;
-const TLS_BUFF_SIZE: usize = 16640;
 
 pub enum ButtonState {
     Pressed,
@@ -41,53 +40,6 @@ pub enum Command {
     PublishButtonEvent(ButtonState),
 }
 
-#[derive(Debug)]
-struct MqttTcpError(tcp::Error);
-
-impl core::fmt::Display for MqttTcpError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::write(f, format_args!("{:?}", self.0))
-    }
-}
-
-impl core::error::Error for MqttTcpError {}
-
-impl embedded_io::Error for MqttTcpError {
-    fn kind(&self) -> embedded_io::ErrorKind {
-        match self.0 {
-            tcp::Error::ConnectionReset => embedded_io::ErrorKind::ConnectionReset,
-        }
-    }
-}
-
-struct MqttTcpSocket<'a>(TcpSocket<'a>);
-
-impl<'a> MqttTcpSocket<'a> {
-    fn new(socket: TcpSocket<'a>) -> Self {
-        Self(socket)
-    }
-}
-
-impl<'a> embedded_io_async::ErrorType for MqttTcpSocket<'a> {
-    type Error = MqttTcpError;
-}
-
-impl<'a> embedded_io_async::Read for MqttTcpSocket<'a> {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        self.0.read(buf).await.map_err(MqttTcpError)
-    }
-}
-
-impl<'a> embedded_io_async::Write for MqttTcpSocket<'a> {
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        self.0.write(buf).await.map_err(MqttTcpError)
-    }
-
-    async fn flush(&mut self) -> Result<(), Self::Error> {
-        self.0.flush().await.map_err(MqttTcpError)
-    }
-}
-
 #[derive(Deserialize)]
 struct LedMessage {
     r: u8,
@@ -96,47 +48,97 @@ struct LedMessage {
 }
 
 #[embassy_executor::task]
-pub async fn mqtt_task(networking: Networking<'static>) {
+pub async fn mqtt_service(networking: Networking<'static>) {
+    loop {
+        if let Err(err) = mqtt_session(&networking).await {
+            error!("Error running MQTT session: {}", err);
+            Timer::after_secs(5).await;
+        }
+    }
+}
+
+#[derive(Debug, defmt::Format)]
+enum MqttSessionError {
+    ConnectOptions(ConnectOptionsError),
+    TcpConnection(TcpConnectionError),
+    TlsConnection(TlsConnectionError),
+    Mqtt,
+    MqttString(MqttStringError),
+    TopicFilterCreation,
+    MessageNotValidUtf8,
+}
+
+impl From<ConnectOptionsError> for MqttSessionError {
+    fn from(err: ConnectOptionsError) -> Self {
+        MqttSessionError::ConnectOptions(err)
+    }
+}
+
+impl From<TcpConnectionError> for MqttSessionError {
+    fn from(err: TcpConnectionError) -> Self {
+        MqttSessionError::TcpConnection(err)
+    }
+}
+
+impl From<TlsConnectionError> for MqttSessionError {
+    fn from(err: TlsConnectionError) -> Self {
+        MqttSessionError::TlsConnection(err)
+    }
+}
+
+impl<'e> From<MqttError<'e>> for MqttSessionError {
+    fn from(_: MqttError<'e>) -> Self {
+        MqttSessionError::Mqtt
+    }
+}
+
+impl From<MqttStringError> for MqttSessionError {
+    fn from(err: MqttStringError) -> Self {
+        MqttSessionError::MqttString(err)
+    }
+}
+
+impl From<FromUtf8Error> for MqttSessionError {
+    fn from(_: FromUtf8Error) -> Self {
+        MqttSessionError::MessageNotValidUtf8
+    }
+}
+
+async fn mqtt_session(networking: &Networking<'static>) -> Result<(), MqttSessionError> {
     const BROKER_ADDRESS: &str = env!("BROKER_ADDRESS");
 
-    let tls = TcpConnection::new(networking, BROKER_ADDRESS)
-        .await
-        .unwrap()
+    let tls_connection = TcpConnection::new(networking, BROKER_ADDRESS)
+        .await?
         .with_tls()
-        .await
-        .unwrap();
+        .await?;
 
     let mut mqtt_buffer = AllocBuffer;
 
     let mut client: MqttClient<_, _, 10, 10, 10, 4> = MqttClient::new(&mut mqtt_buffer);
-
-    let connect_options = ConnectOptions::new()
-        .clean_start()
-        .session_expiry_interval(SessionExpiryInterval::NeverEnd)
-        .user_name(MqttString::from_str(env!("MQTT_USERNAME")).unwrap())
-        .password(MqttBinary::from_slice(env!("MQTT_PASSWORD").as_bytes()).unwrap());
+    let connect_options = get_connect_options()?;
 
     client
         .connect(
-            tls,
+            tls_connection,
             &connect_options,
-            Some(MqttString::from_str(env!("CLIENT_ID")).unwrap()),
+            Some(MqttString::from_str(env!("CLIENT_ID"))?),
         )
-        .await
-        .unwrap();
+        .await?;
 
     info!("connected");
 
     client
         .subscribe(
-            TopicFilter::new(MqttString::from_str("led").unwrap()).unwrap(),
+            TopicFilter::new(MqttString::from_str("led")?)
+                .ok_or(MqttSessionError::TopicFilterCreation)?,
             SubscriptionOptions::new().at_least_once(),
         )
-        .await
-        .unwrap();
+        .await?;
 
-    let button_topic =
-        TopicReference::Name(TopicName::new(MqttString::from_str("button").unwrap()).unwrap());
+    let button_topic = TopicReference::Name(
+        TopicName::new(MqttString::from_str("button")?)
+            .ok_or(MqttSessionError::TopicFilterCreation)?,
+    );
     let button_options = PublicationOptions::new(button_topic).at_least_once();
 
     loop {
@@ -148,40 +150,89 @@ pub async fn mqtt_task(networking: Networking<'static>) {
                         ButtonState::Released => "released",
                     };
 
-                    let _ = client
+                    if let Err(err) = client
                         .publish(&button_options, format_msg(message).as_str().into())
                         .await
-                        .unwrap();
+                    {
+                        if !err.is_recoverable() {
+                            return Err(err.into());
+                        } else {
+                            error!("Error publishing button event: {}", err);
+                        }
+                    }
                 }
             },
 
             Either::Second(poll_result) => match poll_result {
                 Ok(event) => {
                     if let Event::Publish(publish_msg) = event {
-                        let msg =
-                            String::from_utf8(publish_msg.message.as_bytes().to_vec()).unwrap();
+                        let msg = match String::from_utf8(publish_msg.message.as_bytes().to_vec()) {
+                            Ok(msg) => msg,
+                            Err(err) => {
+                                error!("Error parsing MQTT message: {}", Debug2Format(&err));
+                                continue;
+                            }
+                        };
+
                         info!("Received message on led topic: {}", msg.as_str());
 
-                        let (
-                            LedMessage {
-                                r: red,
-                                g: green,
-                                b: blue,
-                            },
-                            _,
-                        ) = serde_json_core::from_str::<LedMessage>(msg.as_str()).unwrap();
+                        let (red, green, blue) =
+                            match serde_json_core::from_str::<LedMessage>(msg.as_str()) {
+                                Ok((LedMessage { r, g, b }, _)) => (r, g, b),
+                                Err(err) => {
+                                    error!("Error deserializing MQTT message: {}", err);
+                                    continue;
+                                }
+                            };
 
                         LED_COMMAND_CHANNEL
                             .send(LedCommand::ChangeColor(RGB8::new(red, green, blue)))
                             .await
                     }
                 }
-                Err(e) => {
-                    error!("MQTT Poll Error: {:?}", e);
+                Err(err) => {
+                    if !err.is_recoverable() {
+                        return Err(err.into());
+                    }
+                    error!("MQTT Poll Error: {}", err);
                 }
             },
         }
     }
+}
+
+#[derive(Debug, defmt::Format)]
+enum ConnectOptionsError {
+    Username(MqttStringError),
+    MqttPasswordTooLong,
+}
+
+impl From<MqttStringError> for ConnectOptionsError {
+    fn from(err: MqttStringError) -> Self {
+        ConnectOptionsError::Username(err)
+    }
+}
+
+impl From<TooLargeToEncode> for ConnectOptionsError {
+    fn from(_: TooLargeToEncode) -> Self {
+        ConnectOptionsError::MqttPasswordTooLong
+    }
+}
+
+fn get_connect_options<'c>() -> Result<ConnectOptions<'c>, ConnectOptionsError> {
+    let mut connect_options = ConnectOptions::new()
+        .clean_start()
+        .session_expiry_interval(SessionExpiryInterval::NeverEnd)
+        .user_name(MqttString::from_str(env!("MQTT_USERNAME"))?)
+        .password(MqttBinary::from_slice(env!("MQTT_PASSWORD").as_bytes())?);
+
+    const KEEP_ALIVE_SECONDS: u16 = 120;
+    if let Some(non_zero_seconds) = NonZeroU16::new(KEEP_ALIVE_SECONDS) {
+        let keep_alive = KeepAlive::Seconds(non_zero_seconds);
+        connect_options = connect_options.keep_alive(keep_alive)
+    }
+
+    Ok(connect_options)
 }
 
 fn format_msg(msg: &str) -> String {

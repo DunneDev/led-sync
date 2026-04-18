@@ -52,7 +52,6 @@ impl From<SpawnError> for NetworkingInitError {
 }
 
 pub struct Networking<'d> {
-    pub rng: Trng,
     stack: Stack<'d>,
 }
 
@@ -81,7 +80,7 @@ impl<'d> Networking<'d> {
 
         stack.wait_config_up().await;
 
-        Ok(Self { rng, stack })
+        Ok(Self { stack })
     }
 }
 

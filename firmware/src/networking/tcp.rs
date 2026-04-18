@@ -7,7 +7,7 @@ use embedded_io::ErrorType;
 use embedded_tls::{
     Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, TlsError, UnsecureProvider,
 };
-use esp_hal::rng::Trng;
+use esp_hal::rng::{Trng, TrngError};
 use smoltcp::wire::DnsQueryType;
 use static_cell::StaticCell;
 
@@ -21,11 +21,11 @@ const TLS_BUFF_SIZE: usize = 16640;
 static TLS_TX_BUFF: StaticCell<[u8; TLS_BUFF_SIZE]> = StaticCell::new();
 static TLS_RX_BUFF: StaticCell<[u8; TLS_BUFF_SIZE]> = StaticCell::new();
 
-#[derive(Debug)]
+#[derive(Debug, defmt::Format)]
 pub enum TcpConnectionError {
     Dns(dns::Error),
     AddressNotFound,
-    TcpConnect(ConnectError),
+    Connection(ConnectError),
 }
 
 impl From<dns::Error> for TcpConnectionError {
@@ -36,14 +36,13 @@ impl From<dns::Error> for TcpConnectionError {
 
 impl From<ConnectError> for TcpConnectionError {
     fn from(err: ConnectError) -> Self {
-        TcpConnectionError::TcpConnect(err)
+        TcpConnectionError::Connection(err)
     }
 }
 
 pub struct TcpConnection<'d> {
     socket: TcpSocket<'d>,
     address_str: &'static str,
-    rng: Option<Trng>,
 }
 
 impl<'d> ErrorType for TcpConnection<'d> {
@@ -75,9 +74,27 @@ impl<'d> embedded_io_async::Write for TcpConnection<'d> {
     }
 }
 
+#[derive(Debug, defmt::Format)]
+pub enum TlsConnectionError {
+    Tls(TlsError),
+    Trng(TrngError),
+}
+
+impl From<TlsError> for TlsConnectionError {
+    fn from(err: TlsError) -> Self {
+        TlsConnectionError::Tls(err)
+    }
+}
+
+impl From<TrngError> for TlsConnectionError {
+    fn from(err: TrngError) -> Self {
+        TlsConnectionError::Trng(err)
+    }
+}
+
 impl<'d> TcpConnection<'d> {
     pub async fn new(
-        networking: Networking<'static>,
+        networking: &Networking<'static>,
         address_str: &'static str,
     ) -> Result<Self, TcpConnectionError> {
         let addresses = networking
@@ -103,18 +120,17 @@ impl<'d> TcpConnection<'d> {
         Ok(Self {
             socket,
             address_str,
-            rng: Some(networking.rng),
         })
     }
 
     pub async fn with_tls(
-        mut self,
-    ) -> Result<TlsConnection<'d, TcpConnection<'d>, Aes128GcmSha256>, TlsError> {
+        self,
+    ) -> Result<TlsConnection<'d, TcpConnection<'d>, Aes128GcmSha256>, TlsConnectionError> {
         let tx_buff = TLS_TX_BUFF.init([0; TLS_BUFF_SIZE]);
         let rx_buff = TLS_RX_BUFF.init([0; TLS_BUFF_SIZE]);
 
         let address = self.address_str;
-        let rng = self.rng.take();
+        let rng = Trng::try_new().map_err(TlsConnectionError::from)?;
         let mut tls: TlsConnection<_, Aes128GcmSha256> = TlsConnection::new(self, rx_buff, tx_buff);
 
         info!("Starting handshake");
@@ -125,7 +141,7 @@ impl<'d> TcpConnection<'d> {
 
         tls.open(TlsContext::new(
             &config,
-            UnsecureProvider::new::<Aes128GcmSha256>(rng.unwrap()),
+            UnsecureProvider::new::<Aes128GcmSha256>(rng),
         ))
         .await?;
 
